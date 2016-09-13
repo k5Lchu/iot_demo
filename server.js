@@ -5,6 +5,7 @@ var cp = require('child_process');
 
 //var https = require('https');
 //var fs = require('fs');
+var Fiber = require('fibers');
 
 var parser = require('querystring')
 var state = require('./state')
@@ -19,6 +20,14 @@ var options = {
 };*/
 
 cp.spawn('./close.sh', []);
+
+function sleep (delay) {
+	var fiber = Fiber.current;
+	setTimeout(function () {
+		fiber.run();
+	}, delay);
+	Fiber.yield();
+}
 
 function authenticate (req, res, next) {
 	if (req.url != '/' || req.method != 'POST')
@@ -42,13 +51,13 @@ function authenticate (req, res, next) {
 }
 
 function processRequest (req, res, next) {
-	res.writeHead(200,{"Content-Type":"text/plain"});
-	var op = parseInt(reqData.op);
-	console.log(op.toString());
-	var currProcess = null;
-	if (op < 0) {
-		console.log('Asking for status');
-		if (state.processing == 0) {
+	
+	Fiber(function() {
+		res.writeHead(200,{"Content-Type":"text/plain"});
+		var op = parseInt(reqData.op);
+		var currProcess = null;
+		if (op < 0) {
+			console.log('Asking for status');
 			var status_res = "status ";
 			if (Boolean(state.on_1))
 				status_res = status_res.concat("on ");
@@ -60,14 +69,11 @@ function processRequest (req, res, next) {
 				status_res = status_res.concat("off");
 			res.write(status_res);
 		}
-		else {
-			console.log('server busy');
-			res.write("busy stat");
-		}
-	}
-	else if ((op % 2) == 0) {
-		var outlet = Math.floor(op/2);
-		if (state.processing == 0) {
+		else if ((op % 2) == 0) {
+			var outlet = Math.floor(op/2);
+			while (state.processing == 1) {
+				sleep(100);
+			}
 			switch (outlet) {
 				case 0:
 					currProcess = cp.spawn('python', ['switch.py', 'a_on']);
@@ -84,14 +90,10 @@ function processRequest (req, res, next) {
 			}
 		}
 		else {
-			console.log('server busy');
-			var busyResponse = "busy on ".concat(outlet.toString());
-			res.write(busyResponse);
-		}
-	}
-	else {
-		var outlet = Math.floor(op/2);
-		if (state.processing == 0) {
+			var outlet = Math.floor(op/2);
+			while (state.processing == 1) {
+				sleep(100);
+			}
 			switch (outlet) {
 				case 0:
 					currProcess = cp.spawn('python', ['switch.py', 'a_off']);
@@ -107,19 +109,14 @@ function processRequest (req, res, next) {
 					break;
 			}
 		}
-		else {
-			console.log('server busy');
-			var busyResponse = "busy off ".concat(outlet.toString());
-			res.write(busyResponse);
+		if (currProcess != null) {
+			state.processing = 1;
+			currProcess.on('close', processComplete);
+			console.log('begin processing');
 		}
-	}
-	if (currProcess != null) {
-		state.processing = 1;
-		currProcess.on('close', processComplete);
-		console.log('begin processing');
-	}
-	res.end();
-	reqData = null;
+		res.end();
+		reqData = null;
+	}).run();
 }
 
 function processComplete (code) {
