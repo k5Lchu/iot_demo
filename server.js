@@ -10,11 +10,11 @@ var http = require('http');
 var connect = require('connect');
 var url = require('url')
 var cp = require('child_process');
-
 //var https = require('https');
 //var fs = require('fs');
 var Fiber = require('fibers');
 var fs = require('fs');
+
 
 var parser = require('querystring')
 var state = require('./state')
@@ -55,6 +55,54 @@ function sleep (delay) {
 	Fiber.yield();
 }
 
+// set error collection from thread pool
+state.pool.on('error', function (job, error) {
+	console.log(error);
+});
+
+// submit a job (via opcode) to the thread pool 
+function startJob (opCode) {
+	// pool will run the created function
+	const job = state.pool.run( function (code, done) {
+		// import required packages
+		var cp = require('child_process');
+		var Fiber = require('fibers');
+
+		// wrap pausing elements within a Fiber
+		Fiber( function () {
+			// create sleep fucntion
+			function sleep (delay) {
+				var fiber = Fiber.current;
+				setTimeout(function () {
+					fiber.run();
+				}, delay);
+				Fiber.yield();
+			}
+			// flag to show thread is busy
+			var processing = 1;
+			// start turn on/off script
+			var currProcess = cp.spawn('python', ['switch.py', code]);
+			// when script finishes, run close function to free the thread
+			currProcess.on('close', function (retCode) {
+				processing = 0;
+			});
+			// keep thread paused until thread is free
+			while (Boolean(processing)) {
+				sleep(50);
+			}
+			// run done fucntion
+			done();
+		// run the fiber
+		}).run();
+	// start the job with specified argument
+	}).send(opCode);
+
+	// when job has finished, log result
+	job.on('done', function () {
+		console.log('job completed');
+	});
+}
+
 // function used for adding future authentification fucntions
 // main purpose to only allow post requests with valid urls
 function authenticate (req, res, next) {
@@ -83,79 +131,56 @@ function authenticate (req, res, next) {
 // processes post request data to turn on/off a connected device
 function processRequest (req, res, next) {
 	
-	// encircle all code into a fiber function to allow pausing
-	Fiber(function() {
-		// begin writting response
-		res.writeHead(200,{'Content-Type':'text/plain'});
+	// begin writting response
+	res.writeHead(200,{'Content-Type':'text/plain'});
 
-		// varibales for post request data, op code, and specified outlet
-		var reqData = req.reqData;
-		var op = parseInt(reqData.op);
-		var outlet = Math.floor(op/2);
+	// varibales for post request data, op code, and specified outlet
+	var reqData = req.reqData;
+	var op = parseInt(reqData.op);
+	var outlet = Math.floor(op/2);
 
-		// variable to hold child process which turns device on/off
-		var currProcess = null;
+	// variable to hold child process which turns device on/off
+	var currProcess = null;
 
-		// if op code not valid, send error
-		if (outlet >= state.on.length)
-			res.write('Invalid socket');
-		// if op is -1 return status string
-		else if (op < 0) {
-			console.log('Asking for status');
-			var status_res = 'status ';
-			// get status of all connected devices
-			for (i = 0; i < state.on.length; i++) {
-				if (Boolean(state.on[i]))
-					status_res = status_res.concat('on ');
-				else
-					status_res = status_res.concat('off ')
-			}
-			res.write(status_res);
+	// if op code not valid, send error
+	if (outlet >= state.on.length)
+		res.write('Invalid socket');
+	// if op is -1 return status string
+	else if (op < 0) {
+		console.log('Asking for status');
+		var status_res = 'status ';
+		// get status of all connected devices
+		for (i = 0; i < state.on.length; i++) {
+			if (Boolean(state.on[i]))
+				status_res = status_res.concat('on ');
+			else
+				status_res = status_res.concat('off ')
 		}
-		// if op code is even (a turn on code)
-		else if ((op % 2) == 0) {
-			// sleep for 100ms if server is still fufilling another request
-			while (Boolean(state.processing)) {
-				sleep(100);
-			}
-			// start child process and change recorded status of device
-			var commandOutlet = String.fromCharCode(outlet+97);
-			var command = commandOutlet.concat('_on');
-			currProcess = cp.spawn('python', ['switch.py', command]);
-			state.on[outlet] = 1;
-			res.write('on ' + (outlet+1).toString());
-			console.log('outlet' + (outlet+1).toString() + ' on');
-		}
-		// if op code is odd (a turn off code)
-		else {
-			while (Boolean(state.processing)) {
-				sleep(100);
-			}
-			var commandOutlet = String.fromCharCode(outlet+97);
-			var command = commandOutlet.concat('_off');
-			currProcess = cp.spawn('python', ['switch.py', command]);
-			state.on[outlet] = 0;
-			res.write('off ' + (outlet+1).toString());
-			console.log('outlet' + (outlet+1).toString() + ' off');
-		}
+		res.write(status_res);
+	}
+	// if op code is even (a turn on code)
+	else if ((op % 2) == 0) {
+		var commandOutlet = String.fromCharCode(outlet+97);
+		var command = commandOutlet.concat('_on');
+		// start job to turn on/off device
+		startJob(command);
+		// set device sttaus and finish writting response
+		state.on[outlet] = 1;
+		res.write('on ' + (outlet+1).toString());
+		console.log('outlet' + (outlet+1).toString() + ' on');
+	}
+	// if op code is odd (a turn off code)
+	else {
+		var commandOutlet = String.fromCharCode(outlet+97);
+		var command = commandOutlet.concat('_off');
+		startJob(command);
+		state.on[outlet] = 0;
+		res.write('off ' + (outlet+1).toString());
+		console.log('outlet' + (outlet+1).toString() + ' off');
+	}
 
-		// if child process was started, set server status to busy and
-		// set callback for when child process has finished
-		if (currProcess != null) {
-			state.processing = 1;
-			currProcess.on('close', processComplete);
-			console.log('begin processing');
-		}
-		// send response to origin
-		res.end();
-	}).run();
-}
-
-// callback for when a child process has finished
-function processComplete (code) {
-	// reset busy status of server
-	state.processing = 0;
-	console.log('finish processing');
+	// send response to origin
+	res.end();
 }
 
 // set applictaion to use authenticate fucntion first, then
@@ -177,6 +202,7 @@ server.on('error', function (err) {
 	console.log(err);
 	cp.spawn('./close.sh', []);
 	server.close();
+	state.pool.killAll();
 	process.exit();
 });
 
@@ -185,5 +211,6 @@ process.on('SIGINT', function() {
 	console.log("Shutting down server");
 	cp.spawn('./close.sh', []);
 	server.close();
+	state.pool.killAll();
 	process.exit();
 });

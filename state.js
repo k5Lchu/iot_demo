@@ -1,4 +1,8 @@
+// import thread pool library
+const Pool = require('threads').Pool;
+
+// create shared states/objects
 module.exports = {
-	processing: 0,
-	on: []
+	on: [],
+	pool: new Pool(1)
 };
