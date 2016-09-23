@@ -28,6 +28,9 @@ var options = {
 	cert:  fs.readFileSync('');
 };*/
 
+// contains turn off commands for all sockets
+closingStrings = [];
+
 // startup file that initializes known sockets connected to the system
 fs.readFile('numSockets.nu', 'utf8', function (err,data) {
 	// if error occured, cancel starting server
@@ -39,12 +42,13 @@ fs.readFile('numSockets.nu', 'utf8', function (err,data) {
 	var sockets = data.split(" ");
 	for (i = 0; i < sockets.length; i++) {
 		state.on.push(false);
+		closingStrings.push(String.fromCharCode(97+i) + '_off ');
 	}
 	console.log(state.on.length + ' sockets available');
 });
 
 // close conncted sockets if they're on
-cp.spawn('./close.sh', []);
+cp.spawn('./close.sh', closingStrings);
 
 // set error collection from thread pool
 state.pool.on('error', function (job, error) {
@@ -187,7 +191,7 @@ console.log('Server is now running...');
 // if server encounters error, log the error
 server.on('error', function (err) {
 	console.log(err);
-	cp.spawn('./close.sh', []);
+	cp.spawn('./close.sh', closingStrings);
 	server.close();
 	state.pool.killAll();
 	process.exit();
@@ -196,7 +200,7 @@ server.on('error', function (err) {
 // if user presses ctrl+c, begin server shutdown
 process.on('SIGINT', function() {
 	console.log("Shutting down server");
-	cp.spawn('./close.sh', []);
+	cp.spawn('./close.sh', closingStrings);
 	server.close();
 	state.pool.killAll();
 	process.exit();
