@@ -12,7 +12,7 @@ var url = require('url')
 var cp = require('child_process');
 //var https = require('https');
 //var fs = require('fs');
-var Fiber = require('fibers');
+//var Fiber = require('fibers');
 var fs = require('fs');
 
 
@@ -38,7 +38,7 @@ fs.readFile('numSockets.nu', 'utf8', function (err,data) {
 	// add sockets to state database for the server
 	var sockets = data.split(" ");
 	for (i = 0; i < sockets.length; i++) {
-		state.on.push(0);
+		state.on.push(false);
 	}
 	console.log(state.on.length + ' sockets available');
 });
@@ -46,62 +46,49 @@ fs.readFile('numSockets.nu', 'utf8', function (err,data) {
 // close conncted sockets if they're on
 cp.spawn('./close.sh', []);
 
-// function used to pause a fiber function for a delay
-function sleep (delay) {
-	var fiber = Fiber.current;
-	setTimeout(function () {
-		fiber.run();
-	}, delay);
-	Fiber.yield();
-}
-
 // set error collection from thread pool
 state.pool.on('error', function (job, error) {
 	console.log(error);
 });
 
-// submit a job (via opcode) to the thread pool 
-function startJob (opCode) {
-	// pool will run the created function
-	const job = state.pool.run( function (code, done) {
-		// import required packages
-		var cp = require('child_process');
-		var Fiber = require('fibers');
+// pool will run this fucntion when request is sent
+const job = state.pool.run( function (code, done) {
+	// import required packages
+	var cp = require('child_process');
+	var Fiber = require('fibers');
 
-		// wrap pausing elements within a Fiber
-		Fiber( function () {
-			// create sleep fucntion
-			function sleep (delay) {
-				var fiber = Fiber.current;
-				setTimeout(function () {
-					fiber.run();
-				}, delay);
-				Fiber.yield();
-			}
-			// flag to show thread is busy
-			var processing = 1;
-			// start turn on/off script
-			var currProcess = cp.spawn('python', ['switch.py', code]);
-			// when script finishes, run close function to free the thread
-			currProcess.on('close', function (retCode) {
-				processing = 0;
-			});
-			// keep thread paused until thread is free
-			while (Boolean(processing)) {
-				sleep(50);
-			}
-			// run done fucntion
-			done();
-		// run the fiber
-		}).run();
-	// start the job with specified argument
-	}).send(opCode);
+	// wrap pausing elements within a Fiber
+	Fiber( function () {
+		// create sleep fucntion
+		function sleep (delay) {
+			var fiber = Fiber.current;
+			setTimeout(function () {
+				fiber.run();
+			}, delay);
+			Fiber.yield();
+		}
+		// flag to show thread is busy
+		var processing = true;
+		// start turn on/off script
+		var currProcess = cp.spawn('python', ['switch.py', code]);
+		// when script finishes, run close function to free the thread
+		currProcess.on('close', function (retCode) {
+			processing = false;
+		});
+		// keep thread paused until thread is free
+		while (processing) {
+			sleep(100);
+		}
+		// run done fucntion
+		done();
+	// run the fiber
+	}).run();
+});
 
-	// when job has finished, log result
-	job.on('done', function () {
-		console.log('job completed');
-	});
-}
+// when job has finished, log
+job.on('done', function () {
+	console.log('job completed');
+});
 
 // function used for adding future authentification fucntions
 // main purpose to only allow post requests with valid urls
@@ -151,7 +138,7 @@ function processRequest (req, res, next) {
 		var status_res = 'status ';
 		// get status of all connected devices
 		for (i = 0; i < state.on.length; i++) {
-			if (Boolean(state.on[i]))
+			if (state.on[i])
 				status_res = status_res.concat('on ');
 			else
 				status_res = status_res.concat('off ')
@@ -163,9 +150,9 @@ function processRequest (req, res, next) {
 		var commandOutlet = String.fromCharCode(outlet+97);
 		var command = commandOutlet.concat('_on');
 		// start job to turn on/off device
-		startJob(command);
+		job.send(command);
 		// set device sttaus and finish writting response
-		state.on[outlet] = 1;
+		state.on[outlet] = true;
 		res.write('on ' + (outlet+1).toString());
 		console.log('outlet' + (outlet+1).toString() + ' on');
 	}
@@ -173,8 +160,8 @@ function processRequest (req, res, next) {
 	else {
 		var commandOutlet = String.fromCharCode(outlet+97);
 		var command = commandOutlet.concat('_off');
-		startJob(command);
-		state.on[outlet] = 0;
+		job.send(command);
+		state.on[outlet] = false;
 		res.write('off ' + (outlet+1).toString());
 		console.log('outlet' + (outlet+1).toString() + ' off');
 	}
